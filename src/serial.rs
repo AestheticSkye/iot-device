@@ -2,6 +2,7 @@ pub mod print;
 
 use alloc::string::{FromUtf8Error, String};
 use alloc::vec::Vec;
+use defmt::info;
 use embassy_futures::join::join;
 use embassy_futures::select::{select, Either};
 use embassy_futures::yield_now;
@@ -14,7 +15,6 @@ use embassy_time::Timer;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
 use embassy_usb::{Builder, Config};
-use log::info;
 use portable_atomic::AtomicBool;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -27,7 +27,7 @@ static STD_OUT: Mutex<CriticalSectionRawMutex, Vec<u8>> = Mutex::new(Vec::new())
 
 static SERIAL_CONNECTED: AtomicBool = AtomicBool::new(false);
 
-pub fn serial_enabled() -> bool {
+pub fn enabled() -> bool {
     SERIAL_CONNECTED.fetch_and(true, portable_atomic::Ordering::Acquire)
 }
 
@@ -61,7 +61,6 @@ pub async fn init_serial(usb: USB) {
     let mut control_buf = [0; 64];
 
     let mut state = State::new();
-    let mut logger_state = State::new();
 
     let mut builder = Builder::new(
         driver,
@@ -74,13 +73,6 @@ pub async fn init_serial(usb: USB) {
 
     // Create classes on the builder.
     let mut class = CdcAcmClass::new(&mut builder, &mut state, 64);
-
-    // Create a class for the logger
-    let logger_class = CdcAcmClass::new(&mut builder, &mut logger_state, 64);
-
-    // Creates the logger and returns the logger future
-    // Note: You'll need to use log::info! afterwards instead of info! for this to work (this also applies to all the other log::* macros)
-    let log_fut = embassy_usb_logger::with_class!(1024, log::LevelFilter::Info, logger_class);
 
     // Build the builder.
     let mut usb = builder.build();
@@ -99,10 +91,12 @@ pub async fn init_serial(usb: USB) {
         }
     };
 
-    join(usb_fut, join(read_fut, log_fut)).await;
+    join(usb_fut, read_fut).await;
 }
 
-async fn read_serial<'d, T: Instance + 'd>(class: &mut CdcAcmClass<'d, Driver<'d, T>>) -> Result<(), Disconnected> {
+async fn read_serial<'d, T: Instance + 'd>(
+    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
+) -> Result<(), Disconnected> {
     let mut buf = [0; 64];
     loop {
         let read_fut = class.read_packet(&mut buf);
@@ -118,22 +112,26 @@ async fn read_serial<'d, T: Instance + 'd>(class: &mut CdcAcmClass<'d, Driver<'d
                 for byte in data {
                     std_in.push(*byte);
                 }
-            },
-            Either::Second(_) => {
+            }
+            Either::Second(()) => {
                 let mut std_out = STD_OUT.lock().await;
 
                 if std_out.is_empty() {
                     continue;
                 }
 
-                class.write_packet(&std_out).await?;
+                #[allow(clippy::significant_drop_in_scrutinee)]
+                for packet in std_out.chunks(64) {
+                    class.write_packet(packet).await?;
+                }
 
-                std_out.clear()
+                *std_out = Vec::new();
             }
         }
     }
 }
 
+#[allow(clippy::significant_drop_tightening)]
 pub async fn read_line(buf: &mut String) -> Result<usize, FromUtf8Error> {
     loop {
         Timer::after_millis(1).await;
@@ -144,7 +142,10 @@ pub async fn read_line(buf: &mut String) -> Result<usize, FromUtf8Error> {
             continue;
         };
 
-        if std_in.get(first_newline - 1).is_some_and(|byte| *byte == b'\r') {
+        if std_in
+            .get(first_newline - 1)
+            .is_some_and(|byte| *byte == b'\r')
+        {
             std_in.remove(first_newline - 1);
         }
 
@@ -155,17 +156,17 @@ pub async fn read_line(buf: &mut String) -> Result<usize, FromUtf8Error> {
         buf.push_str(&text);
 
         return Ok(text.len());
-
     }
 }
 
 pub struct Disconnected {}
 
+#[allow(clippy::fallible_impl_from)]
 impl From<EndpointError> for Disconnected {
     fn from(val: EndpointError) -> Self {
         match val {
             EndpointError::BufferOverflow => panic!("Buffer overflow"),
-            EndpointError::Disabled => Disconnected {},
+            EndpointError::Disabled => Self {},
         }
     }
 }

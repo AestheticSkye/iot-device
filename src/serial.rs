@@ -145,22 +145,29 @@ pub async fn read_line(buf: &mut String) -> Result<usize, FromUtf8Error> {
 
         let mut std_in = STD_IN.lock().await;
 
-        let Some(first_newline) = std_in.iter().position(|byte| *byte == b'\n') else {
+        let Some(first_newline) = std_in
+            .iter()
+            .position(|byte| *byte == b'\r' || *byte == b'\n')
+        else {
             continue;
         };
 
-        if std_in
-            .get(first_newline - 1)
-            .is_some_and(|byte| *byte == b'\r')
-        {
-            std_in.remove(first_newline - 1);
-        }
-
+        // Take off the text up to before the newline and leave the rest in std_in.
         let remainder = std_in.split_off(first_newline);
         let data = core::mem::replace(&mut *std_in, remainder);
 
         let text = String::from_utf8(data)?;
         buf.push_str(&text);
+
+        // Remove first /n or /r
+        std_in.remove(0);
+        // Remove second if it exists
+        if std_in
+            .first()
+            .is_some_and(|byte| *byte == b'\r' || *byte == b'\n')
+        {
+            std_in.remove(0);
+        }
 
         return Ok(text.len());
     }

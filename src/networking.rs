@@ -8,7 +8,7 @@ use embassy_executor::Spawner;
 use embassy_net::{
     dns::DnsSocket,
     tcp::client::{TcpClient, TcpClientState},
-    Config, DhcpConfig, Stack, StackResources, StaticConfigV4,
+    Config, DhcpConfig, StackResources, StaticConfigV4,
 };
 use embassy_rp::{
     bind_interrupts,
@@ -32,6 +32,8 @@ bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
 });
 
+type Stack = embassy_net::Stack<cyw43::NetDriver<'static>>;
+
 #[embassy_executor::task]
 async fn wifi_task(
     runner: cyw43::Runner<'static, Output<'static>, PioSpi<'static, PIO0, 0, DMA_CH0>>,
@@ -40,7 +42,7 @@ async fn wifi_task(
 }
 
 #[embassy_executor::task]
-async fn net_task(stack: &'static Stack<cyw43::NetDriver<'static>>) -> ! {
+async fn net_task(stack: &'static Stack) -> ! {
     stack.run().await
 }
 
@@ -63,7 +65,7 @@ pub enum ConnectionError {
 }
 
 pub struct Client<T> {
-    stack: &'static Stack<cyw43::NetDriver<'static>>,
+    stack: &'static Stack,
     seed: u64,
     state: T,
 }
@@ -116,7 +118,7 @@ impl<'a> Client<Disconnected> {
         let seed = rng.next_u64();
 
         // Init network stack
-        static STACK: StaticCell<Stack<cyw43::NetDriver<'static>>> = StaticCell::new();
+        static STACK: StaticCell<Stack> = StaticCell::new();
         static RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
         let stack = &*STACK.init(Stack::new(
             net_device,

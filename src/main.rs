@@ -9,11 +9,14 @@ mod allocator;
 mod networking;
 mod serial;
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
+use defmt::info;
 use embassy_executor::Spawner;
+use embassy_net::StaticConfigV4;
 use embassy_rp::config::Config;
 use embassy_time::Timer;
 
+use networking::{Client, Connected, Disconnected};
 use reqwless::request::Method;
 use serde::Deserialize;
 use serial::{init_serial, read_line};
@@ -31,35 +34,24 @@ async fn main(spawner: Spawner) {
         Timer::after_millis(10).await;
     }
 
-    print!("Enter SSID: ");
+    let client: Client<Connected> = {
+        let disconnected_client = networking::Client::new(
+            &spawner,
+            peripherals.PIN_23,
+            peripherals.PIN_24,
+            peripherals.PIN_25,
+            peripherals.PIN_29,
+            peripherals.PIO0,
+            peripherals.DMA_CH0,
+        )
+        .await;
 
-    let mut ssid = String::new();
-    read_line(&mut ssid).await.expect("Failed to read line");
+        connect_to_network(disconnected_client).await
+    };
 
-    print!("Enter Password: ");
+    let config = client.config();
 
-    let mut password: String = String::new();
-    read_line(&mut password).await.expect("Failed to read line");
-
-    println!("Attempting to connect to `{}`", ssid.trim());
-
-    let client = networking::Client::new(
-        &spawner,
-        ssid.trim(),
-        password.trim(),
-        peripherals.PIN_23,
-        peripherals.PIN_24,
-        peripherals.PIN_25,
-        peripherals.PIN_29,
-        peripherals.PIO0,
-        peripherals.DMA_CH0,
-    )
-    .await;
-
-    println!("Connected to `{}`", ssid.trim());
-
-    drop(ssid);
-    drop(password);
+    print_config(config).await;
 
     let body = client
         .request(
@@ -79,4 +71,70 @@ async fn main(spawner: Spawner) {
 #[derive(Deserialize)]
 struct ApiResponse<'a> {
     datetime: &'a str,
+}
+
+async fn print_config(config: StaticConfigV4) {
+    println!("~~~Config~~~");
+
+    println!("Address: {}", config.address);
+
+    println!(
+        "Gateway: {}",
+        config
+            .gateway
+            .map_or_else(|| String::from("N/A"), |g| g.to_string())
+    );
+
+    for (index, address) in config.dns_servers.iter().enumerate() {
+        println!("DNS {}: {}", index + 1, address);
+    }
+
+    println!("~~~~~~~~~~~~");
+}
+
+async fn connect_to_network(mut disconnected_client: Client<Disconnected>) -> Client<Connected> {
+    loop {
+        let mut ssid = String::new();
+        loop {
+            print!("Enter SSID: ");
+            read_line(&mut ssid).await.expect("Failed to read line");
+            if !ssid.trim().is_empty() {
+                break;
+            }
+            println!("SSID can not be blank");
+        }
+
+        let mut password: String = String::new();
+        // Retry if password is under 8 chars as the spec requires it to be 8 or over.
+        loop {
+            print!("Enter Password (leave blank for open network): ");
+            read_line(&mut password).await.expect("Failed to read line");
+            if password.trim().len() >= 8 || password.trim().is_empty() {
+                break;
+            }
+            password.clear();
+            println!("Password must have more than 8 characters");
+        }
+
+        println!("Attempting to connect to `{}`", ssid.trim());
+
+        // Use None if password is blank for open network.
+        let password = if password.trim().is_empty() {
+            info!("No password provided, searching for open network");
+            None
+        } else {
+            Some(password.trim())
+        };
+
+        match disconnected_client.connect(ssid.trim(), password, 10).await {
+            Ok(client) => {
+                println!("Connected to `{}`", ssid.trim());
+                break client;
+            }
+            Err((error, client)) => {
+                disconnected_client = client;
+                println!("{error}");
+            }
+        };
+    }
 }

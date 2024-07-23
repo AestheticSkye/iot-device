@@ -27,6 +27,8 @@ static STD_OUT: Mutex<CriticalSectionRawMutex, Vec<u8>> = Mutex::new(Vec::new())
 
 static SERIAL_CONNECTED: AtomicBool = AtomicBool::new(false);
 
+/// Whether or not serial has been enabled and connected.
+/// This should be run after [`init_serial`] in a loop until true is returned.
 pub fn enabled() -> bool {
     SERIAL_CONNECTED.fetch_and(true, portable_atomic::Ordering::Acquire)
 }
@@ -49,6 +51,8 @@ const USB_CONFIG: Config = {
     config
 };
 
+/// Initialise serial communication through the USB bus.
+/// This **must** be run before any usage of [`print!`] or [`println!`]
 #[embassy_executor::task]
 pub async fn init_serial(usb: USB) {
     // Create the driver, from the HAL.
@@ -94,6 +98,9 @@ pub async fn init_serial(usb: USB) {
     join(usb_fut, read_fut).await;
 }
 
+/// Cycles through reading data from the serial and placing it in [`STD_IN`] and flushing any data from [`STD_OUT`] to serial.
+///
+/// TODO: Find a better name for it since its not only reading.
 async fn read_serial<'d, T: Instance + 'd>(
     class: &mut CdcAcmClass<'d, Driver<'d, T>>,
 ) -> Result<(), Disconnected> {

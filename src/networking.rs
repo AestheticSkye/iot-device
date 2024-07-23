@@ -1,13 +1,14 @@
 use core::str::from_utf8;
 
 use alloc::{borrow::ToOwned, string::String};
+use cyw43::Control;
 use cyw43_pio::PioSpi;
 use defmt::{info, unwrap};
 use embassy_executor::Spawner;
 use embassy_net::{
     dns::DnsSocket,
     tcp::client::{TcpClient, TcpClientState},
-    Config, DhcpConfig, Stack, StackResources,
+    Config, DhcpConfig, Stack, StackResources, StaticConfigV4,
 };
 use embassy_rp::{
     bind_interrupts,
@@ -16,13 +17,14 @@ use embassy_rp::{
     peripherals::{DMA_CH0, PIN_23, PIN_24, PIN_25, PIN_29, PIO0},
     pio::{InterruptHandler, Pio},
 };
-use embassy_time::Timer;
+use embassy_time::{Instant, Timer};
 use rand::RngCore;
 use reqwless::{
     client::{HttpClient, TlsConfig, TlsVerify},
     request::{Method, RequestBuilder},
 };
 use static_cell::StaticCell;
+use thiserror_no_std::Error;
 
 use crate::println;
 
@@ -42,18 +44,34 @@ async fn net_task(stack: &'static Stack<cyw43::NetDriver<'static>>) -> ! {
     stack.run().await
 }
 
-pub struct Client {
-    stack: &'static Stack<cyw43::NetDriver<'static>>,
-    seed: u64,
+pub struct Disconnected {
+    control: Control<'static>,
 }
 
-impl Client {
+pub struct Connected;
+
+#[derive(Clone, Copy, Error)]
+pub enum ConnectionError {
+    #[error("SSID not found")]
+    SsidNotFound,
+    #[error("DHCP configuration can not be resolved from server, consider using a static config")]
+    DhcpTimeout,
+    #[error("A timeout occured")]
+    OtherTimeout,
+    #[error("An unknown error occured with code `{0}`")]
+    UnknownError(u32),
+}
+
+pub struct Client<T> {
+    stack: &'static Stack<cyw43::NetDriver<'static>>,
+    seed: u64,
+    state: T,
+}
+
+impl<'a> Client<Disconnected> {
     #[allow(clippy::items_after_statements)]
-    #[allow(clippy::too_many_arguments)]
     pub async fn new(
-        spawner: &Spawner,
-        ssid: &str,
-        password: &str,
+        spawner: &'a Spawner,
         pin_23: PIN_23,
         pin_24: PIN_24,
         pin_25: PIN_25,
@@ -109,36 +127,74 @@ impl Client {
 
         unwrap!(spawner.spawn(net_task(stack)));
 
-        loop {
-            match control.join_wpa2(ssid, password).await {
-                Ok(()) => break,
-                Err(err) => {
-                    info!("join failed with status={}", err.status);
-                }
+        info!("Network stack initialised");
+
+        Self {
+            state: Disconnected { control },
+            stack,
+            seed,
+        }
+    }
+
+    pub async fn connect(
+        mut self,
+        ssid: &str,
+        password: Option<&str>,
+        timeout: u64,
+    ) -> Result<Client<Connected>, (ConnectionError, Self)> {
+        if let Err(error) = {
+            if let Some(password) = password {
+                self.state.control.join_wpa2(ssid, password).await
+            } else {
+                self.state.control.join_open(ssid).await
             }
+        } {
+            info!("join failed with status={}", error.status);
+            let error = match error.status {
+                2 => ConnectionError::OtherTimeout,
+                3 => ConnectionError::SsidNotFound,
+                _ => ConnectionError::UnknownError(error.status),
+            };
+            return Err((error, self));
         }
 
         println!("waiting for DHCP...");
-        while !stack.is_config_up() {
+        let start = Instant::now();
+        while !self.stack.is_config_up() {
             Timer::after_millis(100).await;
+            let now = Instant::now();
+            if (now - start).as_secs() > timeout {
+                return Err((ConnectionError::DhcpTimeout, self));
+            }
         }
         println!("DHCP is now up!");
 
         println!("waiting for link up...");
-        while !stack.is_link_up() {
+        let start = Instant::now();
+        while !self.stack.is_link_up() {
             Timer::after_millis(500).await;
+            let now = Instant::now();
+            if (now - start).as_secs() > timeout {
+                return Err((ConnectionError::OtherTimeout, self));
+            }
         }
         println!("Link is up!");
 
         println!("waiting for stack to be up...");
-        stack.wait_config_up().await;
+        self.stack.wait_config_up().await;
         println!("Stack is up!");
 
-        control.gpio_set(0, true).await;
+        self.state.control.gpio_set(0, true).await;
 
-        Self { stack, seed }
+        Ok(Client {
+            state: Connected,
+            stack: self.stack,
+            seed: self.seed,
+        })
     }
+}
 
+impl Client<Connected> {
     pub async fn request(
         &self,
         url: &str,
@@ -184,5 +240,10 @@ impl Client {
         info!("Response body: {:?}", &body);
 
         Ok(body.to_owned())
+    }
+
+    pub fn config(&self) -> StaticConfigV4 {
+        // This is unreachable as this can only be used after a connection is made.
+        self.stack.config_v4().unwrap()
     }
 }

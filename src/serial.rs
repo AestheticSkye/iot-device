@@ -1,8 +1,7 @@
 pub mod print;
 
-use alloc::collections::vec_deque::VecDeque;
-use alloc::string::{FromUtf8Error, String};
-use alloc::vec::Vec;
+use core::fmt::{self, Write};
+
 use defmt::info;
 use embassy_futures::join::join;
 use embassy_futures::select::{select, Either};
@@ -16,6 +15,7 @@ use embassy_time::Timer;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
 use embassy_usb::{Builder, Config};
+use heapless::{Deque, Vec};
 use portable_atomic::AtomicBool;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -23,8 +23,10 @@ bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
 });
 
-static STD_IN: Mutex<CriticalSectionRawMutex, VecDeque<u8>> = Mutex::new(VecDeque::new());
-static STD_OUT: Mutex<CriticalSectionRawMutex, Vec<u8>> = Mutex::new(Vec::new());
+const BUFFER_SIZE: usize = 1024;
+
+static STD_IN: Mutex<CriticalSectionRawMutex, Deque<u8, BUFFER_SIZE>> = Mutex::new(Deque::new());
+static STD_OUT: Mutex<CriticalSectionRawMutex, Vec<u8, BUFFER_SIZE>> = Mutex::new(Vec::new());
 
 static SERIAL_CONNECTED: AtomicBool = AtomicBool::new(false);
 
@@ -109,6 +111,7 @@ async fn scan_serial<'d, T: Instance + 'd>(
         let yield_fut = yield_now();
 
         match select(read_fut, yield_fut).await {
+            // Read serial if there is data
             Either::First(read_count) => {
                 let data = &buf[..read_count?];
                 class.write_packet(data).await?;
@@ -116,9 +119,10 @@ async fn scan_serial<'d, T: Instance + 'd>(
                 let mut std_in = STD_IN.lock().await;
 
                 for byte in data {
-                    std_in.push_back(*byte);
+                    std_in.push_back(*byte).expect("STDIN buffer overflow");
                 }
             }
+            // Otherwise flush STD_OUT
             Either::Second(()) => {
                 let mut std_out = STD_OUT.lock().await;
 
@@ -142,7 +146,7 @@ async fn scan_serial<'d, T: Instance + 'd>(
 ///
 /// The first line feed or carraige return character is placed into the `buffer`, but any after is dropped.
 #[allow(clippy::significant_drop_tightening)]
-pub async fn read_line(buffer: &mut String) -> Result<usize, FromUtf8Error> {
+pub async fn read_line(buffer: &mut impl Write) -> Result<usize, fmt::Error> {
     loop {
         Timer::after_millis(1).await;
 
@@ -156,7 +160,7 @@ pub async fn read_line(buffer: &mut String) -> Result<usize, FromUtf8Error> {
 
         // Push each char onto the string.
         while let Some(byte) = std_in.pop_front() {
-            buffer.push(byte as char);
+            buffer.write_char(byte as char)?;
             count += 1;
 
             if byte == b'\r' || byte == b'\n' {

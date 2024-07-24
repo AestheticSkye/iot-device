@@ -94,21 +94,21 @@ async fn print_config(config: StaticConfigV4) {
 
 async fn connect_to_network(mut disconnected_client: Client<Disconnected>) -> Client<Connected> {
     loop {
-        let mut ssid = String::new();
+        let mut ssid = heapless::String::<64>::new();
         loop {
             print!("Enter SSID: ");
-            read_line(&mut ssid).await.expect("Failed to read line");
+            _ = read_line(&mut ssid).await;
             if !ssid.trim().is_empty() {
                 break;
             }
             println!("SSID can not be blank");
         }
 
-        let mut password: String = String::new();
+        let mut password= heapless::String::<64>::new();
         // Retry if password is under 8 chars as the spec requires it to be 8 or over.
         loop {
             print!("Enter Password (leave blank for open network): ");
-            read_line(&mut password).await.expect("Failed to read line");
+            _ = read_line(&mut password).await;
             if password.trim().len() >= 8 || password.trim().is_empty() {
                 break;
             }

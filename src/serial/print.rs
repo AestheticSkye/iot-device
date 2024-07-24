@@ -18,6 +18,6 @@ pub async fn _print(args: core::fmt::Arguments<'_>) {
     let mut std_out = STD_OUT.lock().await;
 
     for byte in args.to_string().as_bytes() {
-        std_out.push(*byte);
+        std_out.push(*byte).expect("STDOUT buffer overflow");
     }
 }

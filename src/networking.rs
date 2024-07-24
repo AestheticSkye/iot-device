@@ -58,9 +58,9 @@ pub enum ConnectionError {
     SsidNotFound,
     #[error("DHCP configuration can not be resolved from server, consider using a static config")]
     DhcpTimeout,
-    #[error("A timeout occured")]
+    #[error("A timeout occurred")]
     OtherTimeout,
-    #[error("An unknown error occured with code `{0}`")]
+    #[error("An unknown error occurred with code `{0}`")]
     UnknownError(u32),
 }
 

@@ -1,5 +1,6 @@
 pub mod print;
 
+use alloc::collections::vec_deque::VecDeque;
 use alloc::string::{FromUtf8Error, String};
 use alloc::vec::Vec;
 use defmt::info;
@@ -22,7 +23,7 @@ bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
 });
 
-static STD_IN: Mutex<CriticalSectionRawMutex, Vec<u8>> = Mutex::new(Vec::new());
+static STD_IN: Mutex<CriticalSectionRawMutex, VecDeque<u8>> = Mutex::new(VecDeque::new());
 static STD_OUT: Mutex<CriticalSectionRawMutex, Vec<u8>> = Mutex::new(Vec::new());
 
 static SERIAL_CONNECTED: AtomicBool = AtomicBool::new(false);
@@ -85,23 +86,21 @@ pub async fn init_serial(usb: USB) {
     let usb_fut = usb.run();
 
     // Do stuff with the class!
-    let read_fut = async {
+    let scan_fut = async {
         loop {
             class.wait_connection().await;
             info!("Serial Connected");
             SERIAL_CONNECTED.store(true, portable_atomic::Ordering::SeqCst);
-            let _ = read_serial(&mut class).await;
+            let _ = scan_serial(&mut class).await;
             info!("Serial Disconnected");
         }
     };
 
-    join(usb_fut, read_fut).await;
+    join(usb_fut, scan_fut).await;
 }
 
 /// Cycles through reading data from the serial and placing it in [`STD_IN`] and flushing any data from [`STD_OUT`] to serial.
-///
-/// TODO: Find a better name for it since its not only reading.
-async fn read_serial<'d, T: Instance + 'd>(
+async fn scan_serial<'d, T: Instance + 'd>(
     class: &mut CdcAcmClass<'d, Driver<'d, T>>,
 ) -> Result<(), Disconnected> {
     let mut buf = [0; 64];
@@ -117,7 +116,7 @@ async fn read_serial<'d, T: Instance + 'd>(
                 let mut std_in = STD_IN.lock().await;
 
                 for byte in data {
-                    std_in.push(*byte);
+                    std_in.push_back(*byte);
                 }
             }
             Either::Second(()) => {
@@ -127,8 +126,9 @@ async fn read_serial<'d, T: Instance + 'd>(
                     continue;
                 }
 
-                #[allow(clippy::significant_drop_in_scrutinee)]
-                for packet in std_out.chunks(64) {
+                let packets = std_out.chunks(64);
+
+                for packet in packets {
                     class.write_packet(packet).await?;
                 }
 
@@ -138,38 +138,41 @@ async fn read_serial<'d, T: Instance + 'd>(
     }
 }
 
+/// Reads text from the [`STD_IN`] until a line feed or carraige return is read and appends it to the provided `buffer`.
+///
+/// The first line feed or carraige return character is placed into the `buffer`, but any after is dropped.
 #[allow(clippy::significant_drop_tightening)]
-pub async fn read_line(buf: &mut String) -> Result<usize, FromUtf8Error> {
+pub async fn read_line(buffer: &mut String) -> Result<usize, FromUtf8Error> {
     loop {
         Timer::after_millis(1).await;
 
         let mut std_in = STD_IN.lock().await;
 
-        let Some(first_newline) = std_in
-            .iter()
-            .position(|byte| *byte == b'\r' || *byte == b'\n')
-        else {
+        if !std_in.iter().any(|byte| *byte == b'\r' || *byte == b'\n') {
             continue;
-        };
-
-        // Take off the text up to before the newline and leave the rest in std_in.
-        let remainder = std_in.split_off(first_newline);
-        let data = core::mem::replace(&mut *std_in, remainder);
-
-        let text = String::from_utf8(data)?;
-        buf.push_str(&text);
-
-        // Remove first /n or /r
-        std_in.remove(0);
-        // Remove second if it exists
-        if std_in
-            .first()
-            .is_some_and(|byte| *byte == b'\r' || *byte == b'\n')
-        {
-            std_in.remove(0);
         }
 
-        return Ok(text.len());
+        let mut count = 0;
+
+        // Push each char onto the string.
+        while let Some(byte) = std_in.pop_front() {
+            buffer.push(byte as char);
+            count += 1;
+
+            if byte == b'\r' || byte == b'\n' {
+                break;
+            }
+        }
+
+        // Remove any remaining cr or lf.
+        if std_in
+            .front()
+            .is_some_and(|byte| *byte == b'\r' || *byte == b'\n')
+        {
+            std_in.pop_front();
+        }
+
+        return Ok(count);
     }
 }
 

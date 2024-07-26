@@ -1,6 +1,7 @@
 pub mod print;
 
 use core::fmt::{self, Write};
+use core::sync::atomic::Ordering;
 
 use defmt::info;
 use embassy_futures::join::join;
@@ -33,7 +34,7 @@ static SERIAL_CONNECTED: AtomicBool = AtomicBool::new(false);
 /// Whether or not serial has been enabled and connected.
 /// This should be run after [`init_serial`] in a loop until true is returned.
 pub fn enabled() -> bool {
-    SERIAL_CONNECTED.fetch_and(true, portable_atomic::Ordering::Acquire)
+    SERIAL_CONNECTED.fetch_and(true, Ordering::Acquire)
 }
 
 const USB_CONFIG: Config = {
@@ -92,7 +93,7 @@ pub async fn init_serial(usb: USB) {
         loop {
             class.wait_connection().await;
             info!("Serial Connected");
-            SERIAL_CONNECTED.store(true, portable_atomic::Ordering::SeqCst);
+            SERIAL_CONNECTED.store(true, Ordering::SeqCst);
             let _ = scan_serial(&mut class).await;
             info!("Serial Disconnected");
         }
@@ -102,6 +103,7 @@ pub async fn init_serial(usb: USB) {
 }
 
 /// Cycles through reading data from the serial and placing it in [`STD_IN`] and flushing any data from [`STD_OUT`] to serial.
+#[allow(clippy::significant_drop_tightening)]
 async fn scan_serial<'d, T: Instance + 'd>(
     class: &mut CdcAcmClass<'d, Driver<'d, T>>,
 ) -> Result<(), Disconnected> {
@@ -136,7 +138,7 @@ async fn scan_serial<'d, T: Instance + 'd>(
                     class.write_packet(packet).await?;
                 }
 
-                *std_out = Vec::new();
+                std_out.clear();
             }
         }
     }
@@ -147,16 +149,17 @@ async fn scan_serial<'d, T: Instance + 'd>(
 /// The first line feed or carraige return character is placed into the `buffer`, but any after is dropped.
 #[allow(clippy::significant_drop_tightening)]
 pub async fn read_line(buffer: &mut impl Write) -> Result<usize, fmt::Error> {
-    loop {
+    // Makes sure no other thread is able to read from stdin while this one is
+    static STD_IN_READ_LOCK: Mutex<CriticalSectionRawMutex, ()> = Mutex::new(());
+
+    // Wait for other threads to finish.
+    STD_IN_READ_LOCK.lock().await;
+
+    let mut count = 0;
+    'a: loop {
         Timer::after_millis(1).await;
 
         let mut std_in = STD_IN.lock().await;
-
-        if !std_in.iter().any(|byte| *byte == b'\r' || *byte == b'\n') {
-            continue;
-        }
-
-        let mut count = 0;
 
         // Push each char onto the string.
         while let Some(byte) = std_in.pop_front() {
@@ -164,20 +167,19 @@ pub async fn read_line(buffer: &mut impl Write) -> Result<usize, fmt::Error> {
             count += 1;
 
             if byte == b'\r' || byte == b'\n' {
-                break;
+                // Remove any remaining cr or lf.
+                if std_in
+                    .front()
+                    .is_some_and(|byte| *byte == b'\r' || *byte == b'\n')
+                {
+                    std_in.pop_front();
+                }
+
+                break 'a;
             }
         }
-
-        // Remove any remaining cr or lf.
-        if std_in
-            .front()
-            .is_some_and(|byte| *byte == b'\r' || *byte == b'\n')
-        {
-            std_in.pop_front();
-        }
-
-        return Ok(count);
     }
+    Ok(count)
 }
 
 pub struct Disconnected {}

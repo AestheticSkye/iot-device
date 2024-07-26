@@ -1,6 +1,5 @@
-use core::str::from_utf8;
+use core::fmt::{Debug, Write};
 
-use alloc::{borrow::ToOwned, string::String};
 use cyw43::Control;
 use cyw43_pio::PioSpi;
 use defmt::{info, unwrap};
@@ -8,7 +7,7 @@ use embassy_executor::Spawner;
 use embassy_net::{
     dns::DnsSocket,
     tcp::client::{TcpClient, TcpClientState},
-    Config, DhcpConfig, StackResources, StaticConfigV4,
+    Config, DhcpConfig, StackResources,
 };
 use embassy_rp::{
     bind_interrupts,
@@ -18,11 +17,15 @@ use embassy_rp::{
     pio::{InterruptHandler, Pio},
 };
 use embassy_time::{Instant, Timer};
+use heapless::{String, Vec};
 use rand::RngCore;
 use reqwless::{
     client::{HttpClient, TlsConfig, TlsVerify},
     request::{Method, RequestBuilder},
+    response::StatusCode,
 };
+use serde::Deserialize;
+use serde_json_core::de;
 use static_cell::StaticCell;
 use thiserror_no_std::Error;
 
@@ -46,11 +49,19 @@ async fn net_task(stack: &'static Stack) -> ! {
     stack.run().await
 }
 
+const RX_BUFFER_SIZE: usize = 8192;
+
 pub struct Disconnected {
     control: Control<'static>,
 }
 
 pub struct Connected;
+
+pub struct Client<T> {
+    stack: &'static Stack,
+    seed: u64,
+    state: T,
+}
 
 #[derive(Clone, Copy, Error)]
 pub enum ConnectionError {
@@ -64,10 +75,24 @@ pub enum ConnectionError {
     UnknownError(u32),
 }
 
-pub struct Client<T> {
-    stack: &'static Stack,
-    seed: u64,
-    state: T,
+#[derive(Error, Debug)]
+pub enum RequestError {
+    #[error("An error occured with the request: `{0}`")]
+    NetworkError(String<64>),
+    #[error("Request returned with status code `{0}`")]
+    HttpCode(u16),
+    #[error("Failed to decode response")]
+    JsonDecodingError(#[from] de::Error),
+    #[error("Failed to decode uf8")]
+    UtfDecodingError(#[from] core::str::Utf8Error),
+}
+
+impl From<reqwless::Error> for RequestError {
+    fn from(value: reqwless::Error) -> Self {
+        let mut buf = String::new();
+        write!(buf, "{value:?}").expect("Failed to write to error buffer");
+        Self::NetworkError(buf)
+    }
 }
 
 impl<'a> Client<Disconnected> {
@@ -86,7 +111,7 @@ impl<'a> Client<Disconnected> {
         // let fw = include_bytes!("../firmware/43439A0.bin");
         let clm = include_bytes!("../firmware/43439A0_clm.bin");
 
-        let fw = unsafe { core::slice::from_raw_parts(0x1010_0000 as *const u8, 230_3211) };
+        let fw = unsafe { core::slice::from_raw_parts(0x1010_0000 as *const u8, 2_303_211) };
         // let clm = unsafe { core::slice::from_raw_parts(0x10140000 as *const u8, 4752) };
 
         let pwr = Output::new(pin_23, Level::Low);
@@ -197,14 +222,46 @@ impl<'a> Client<Disconnected> {
 }
 
 impl Client<Connected> {
-    pub async fn request(
+    pub const BLANK_REQUEST_BUFFER: String<RX_BUFFER_SIZE> = String::new();
+
+    /// Send a http/s request and serialize the returning data.
+    ///
+    /// To ignore the response body use [`request`]
+    pub async fn request_with_data<'a, T: Deserialize<'a>>(
         &self,
         url: &str,
         method: Method,
         headers: Option<&[(&str, &str)]>,
-        body: Option<&str>,
-    ) -> Result<String, reqwless::Error> {
-        let mut rx_buffer = [0; 8192];
+        body: Option<&'a str>,
+        serialization_buffer: &'a mut String<RX_BUFFER_SIZE>,
+    ) -> Result<(StatusCode, T), RequestError> {
+        let result = self.inner_request(url, method, headers, body).await?;
+        *serialization_buffer = result.1;
+        Ok((result.0, serde_json_core::from_str(serialization_buffer)?.0))
+    }
+
+    /// Send a http/s request but ignore the returned response body.
+    ///
+    /// To include the response body, use [`request_with_data`]
+    pub async fn request<'a>(
+        &self,
+        url: &str,
+        method: Method,
+        headers: Option<&[(&str, &str)]>,
+        body: Option<&'a str>,
+    ) -> Result<StatusCode, RequestError> {
+        let response = self.inner_request(url, method, headers, body).await?;
+        Ok(response.0)
+    }
+
+    async fn inner_request<'a>(
+        &self,
+        url: &str,
+        method: Method,
+        headers: Option<&[(&str, &str)]>,
+        body: Option<&'a str>,
+    ) -> Result<(StatusCode, String<RX_BUFFER_SIZE>), RequestError> {
+        let mut rx_buffer = [0; RX_BUFFER_SIZE];
         let mut tls_read_buffer = [0; 16640];
         let mut tls_write_buffer = [0; 16640];
 
@@ -224,28 +281,53 @@ impl Client<Connected> {
             HttpClient::new(&tcp_client, &dns_client)
         };
 
+        // Create request with headers and body.
+        let mut request = {
+            let mut request = http_client.request(method, url).await?;
+            if let Some(headers) = headers {
+                request = request.headers(headers);
+            }
+            request.body(body.map(str::as_bytes))
+        };
+
         info!("connecting to {}", &url);
 
-        let mut request = http_client.request(method, url).await?;
-
-        if let Some(headers) = headers {
-            request = request.headers(headers);
+        // Send request.
+        let response = request.send(&mut rx_buffer).await?;
+        let status = response.status;
+        if !status.is_successful() {
+            return Err(RequestError::HttpCode(status.0));
         }
 
-        let body = body.map(str::as_bytes);
-        let mut request = request.body(body);
+        // Serialize data as string.
+        let body = response.body().read_to_end().await?;
+        let buffer = String::from_utf8(Vec::from_slice(body).unwrap())?;
 
-        let response = request.send(&mut rx_buffer).await?;
-
-        let body = from_utf8(response.body().read_to_end().await.unwrap())?;
-
-        info!("Response body: {:?}", &body);
-
-        Ok(body.to_owned())
+        info!("Response body: {:?}", buffer);
+        Ok((status, buffer))
     }
 
-    pub fn config(&self) -> StaticConfigV4 {
-        // This is unreachable as this can only be used after a connection is made.
-        self.stack.config_v4().unwrap()
+    pub async fn print_config(&self) {
+        let config = self.stack.config_v4().unwrap();
+
+        println!("~~~Config~~~");
+
+        println!("Address: {}", config.address);
+
+        if let Some(gateway) = config.gateway {
+            println!("Gateway: {}", gateway);
+        } else {
+            println!("Gateway: N/A");
+        }
+
+        for index in 0..=2 {
+            if let Some(address) = config.dns_servers.get(index) {
+                println!("DNS {}: {address}", index + 1);
+            } else {
+                println!("DNS {}: N/A", index + 1);
+            }
+        }
+
+        println!("~~~~~~~~~~~~");
     }
 }

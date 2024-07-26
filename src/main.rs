@@ -3,16 +3,14 @@
 #![allow(clippy::future_not_send)]
 #![allow(clippy::large_futures)]
 
-extern crate alloc;
+// extern crate alloc;
 
 mod allocator;
 mod networking;
 mod serial;
 
-use alloc::string::{String, ToString};
-use defmt::info;
+use defmt::{info, unwrap};
 use embassy_executor::Spawner;
-use embassy_net::StaticConfigV4;
 use embassy_rp::config::Config;
 use embassy_time::Timer;
 
@@ -28,14 +26,14 @@ async fn main(spawner: Spawner) {
 
     let peripherals = embassy_rp::init(Config::default());
 
-    spawner.spawn(init_serial(peripherals.USB)).unwrap();
+    unwrap!(spawner.spawn(init_serial(peripherals.USB)));
 
     while !serial::enabled() {
         Timer::after_millis(10).await;
     }
 
     let client: Client<Connected> = {
-        let disconnected_client = networking::Client::new(
+        let disconnected_client = Client::new(
             &spawner,
             peripherals.PIN_23,
             peripherals.PIN_24,
@@ -49,47 +47,32 @@ async fn main(spawner: Spawner) {
         connect_to_network(disconnected_client).await
     };
 
-    let config = client.config();
+    client.print_config().await;
 
-    print_config(config).await;
-
-    let body = client
-        .request(
+    let mut buffer = Client::BLANK_REQUEST_BUFFER;
+    let (_, data) = match client
+        .request_with_data::<ApiResponse>(
             "http://worldtimeapi.org/api/timezone/Europe/Berlin",
             Method::GET,
             None,
             None,
+            &mut buffer,
         )
         .await
-        .unwrap();
+    {
+        Ok(body) => body,
+        Err(err) => {
+            println!("{err}");
+            return;
+        }
+    };
 
-    let response: ApiResponse = serde_json_core::from_str(&body).unwrap().0;
-
-    println!("{}", response.datetime);
+    println!("{}", data.datetime);
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct ApiResponse<'a> {
     datetime: &'a str,
-}
-
-async fn print_config(config: StaticConfigV4) {
-    println!("~~~Config~~~");
-
-    println!("Address: {}", config.address);
-
-    println!(
-        "Gateway: {}",
-        config
-            .gateway
-            .map_or_else(|| String::from("N/A"), |g| g.to_string())
-    );
-
-    for (index, address) in config.dns_servers.iter().enumerate() {
-        println!("DNS {}: {}", index + 1, address);
-    }
-
-    println!("~~~~~~~~~~~~");
 }
 
 async fn connect_to_network(mut disconnected_client: Client<Disconnected>) -> Client<Connected> {
@@ -104,7 +87,7 @@ async fn connect_to_network(mut disconnected_client: Client<Disconnected>) -> Cl
             println!("SSID can not be blank");
         }
 
-        let mut password= heapless::String::<64>::new();
+        let mut password = heapless::String::<64>::new();
         // Retry if password is under 8 chars as the spec requires it to be 8 or over.
         loop {
             print!("Enter Password (leave blank for open network): ");

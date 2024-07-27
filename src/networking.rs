@@ -81,9 +81,9 @@ pub enum RequestError {
     NetworkError(String<64>),
     #[error("Request returned with status code `{0}`")]
     HttpCode(u16),
-    #[error("Failed to decode response")]
+    #[error("Failed to decode response: `{0}`")]
     JsonDecodingError(#[from] de::Error),
-    #[error("Failed to decode uf8")]
+    #[error("Failed to decode uf8: `{0}`")]
     UtfDecodingError(#[from] core::str::Utf8Error),
 }
 

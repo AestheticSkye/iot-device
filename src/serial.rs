@@ -31,10 +31,10 @@ static STD_OUT: Mutex<CriticalSectionRawMutex, Vec<u8, BUFFER_SIZE>> = Mutex::ne
 
 static SERIAL_CONNECTED: AtomicBool = AtomicBool::new(false);
 
-/// Whether or not serial has been enabled and connected.
-/// This should be run after [`init_serial`] in a loop until true is returned.
-pub fn enabled() -> bool {
-    SERIAL_CONNECTED.fetch_and(true, Ordering::Acquire)
+pub async fn wait_serial_up() {
+    while !SERIAL_CONNECTED.fetch_and(true, Ordering::Acquire) {
+        Timer::after_millis(10).await;
+    }
 }
 
 const USB_CONFIG: Config = {

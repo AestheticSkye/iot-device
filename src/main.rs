@@ -9,10 +9,9 @@ mod allocator;
 mod networking;
 mod serial;
 
-use defmt::{info, unwrap};
+use defmt::unwrap;
 use embassy_executor::Spawner;
 use embassy_rp::config::Config;
-use embassy_time::Timer;
 
 use networking::{Client, Connected, Disconnected};
 use reqwless::request::Method;
@@ -28,9 +27,7 @@ async fn main(spawner: Spawner) {
 
     unwrap!(spawner.spawn(init_serial(peripherals.USB)));
 
-    while !serial::enabled() {
-        Timer::after_millis(10).await;
-    }
+    serial::wait_serial_up().await;
 
     let client: Client<Connected> = {
         let disconnected_client = Client::new(
@@ -77,39 +74,34 @@ struct ApiResponse<'a> {
 
 async fn connect_to_network(mut disconnected_client: Client<Disconnected>) -> Client<Connected> {
     loop {
-        let mut ssid = heapless::String::<64>::new();
-        loop {
+        let ssid = loop {
+            let mut ssid = heapless::String::<64>::new();
             print!("Enter SSID: ");
             _ = read_line(&mut ssid).await;
             if !ssid.trim().is_empty() {
-                break;
+                break ssid;
             }
             println!("SSID can not be blank");
-        }
+        };
 
-        let mut password = heapless::String::<64>::new();
         // Retry if password is under 8 chars as the spec requires it to be 8 or over.
-        loop {
+        let password = loop {
+            let mut password = heapless::String::<64>::new();
             print!("Enter Password (leave blank for open network): ");
             _ = read_line(&mut password).await;
-            if password.trim().len() >= 8 || password.trim().is_empty() {
-                break;
+            match password.trim().len() {
+                8.. => break Some(password),
+                0 => break None,
+                _ => println!("Password must have more than 8 characters"),
             }
-            password.clear();
-            println!("Password must have more than 8 characters");
-        }
+        };
 
         println!("Attempting to connect to `{}`", ssid.trim());
 
-        // Use None if password is blank for open network.
-        let password = if password.trim().is_empty() {
-            info!("No password provided, searching for open network");
-            None
-        } else {
-            Some(password.trim())
-        };
-
-        match disconnected_client.connect(ssid.trim(), password, 10).await {
+        match disconnected_client
+            .connect(ssid.trim(), password.as_ref().map(|s| s.trim()), 10)
+            .await
+        {
             Ok(client) => {
                 println!("Connected to `{}`", ssid.trim());
                 break client;

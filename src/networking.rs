@@ -1,3 +1,5 @@
+pub mod network_config;
+
 use core::fmt::{Debug, Write};
 
 use cyw43::Control;
@@ -7,7 +9,7 @@ use embassy_executor::Spawner;
 use embassy_net::{
     dns::DnsSocket,
     tcp::client::{TcpClient, TcpClientState},
-    Config, DhcpConfig, StackResources,
+    Config, DhcpConfig, StackResources, StaticConfigV4,
 };
 use embassy_rp::{
     bind_interrupts,
@@ -55,7 +57,9 @@ pub struct Disconnected {
     control: Control<'static>,
 }
 
-pub struct Connected;
+pub struct Connected {
+    config: StaticConfigV4,
+}
 
 pub struct Client<T> {
     stack: &'static Stack,
@@ -168,7 +172,13 @@ impl<'a> Client<Disconnected> {
         ssid: &str,
         password: Option<&str>,
         timeout: u64,
+        static_config: Option<StaticConfigV4>,
     ) -> Result<Client<Connected>, (ConnectionError, Self)> {
+        if let Some(static_config) = static_config {
+            self.stack
+                .set_config_v4(embassy_net::ConfigV4::Static(static_config));
+        }
+
         if let Err(error) = {
             if let Some(password) = password {
                 self.state.control.join_wpa2(ssid, password).await
@@ -214,7 +224,9 @@ impl<'a> Client<Disconnected> {
         self.state.control.gpio_set(0, true).await;
 
         Ok(Client {
-            state: Connected,
+            state: Connected {
+                config: self.stack.config_v4().unwrap(),
+            },
             stack: self.stack,
             seed: self.seed,
         })
@@ -308,20 +320,18 @@ impl Client<Connected> {
     }
 
     pub async fn print_config(&self) {
-        let config = self.stack.config_v4().unwrap();
-
         println!("~~~Config~~~");
 
-        println!("Address: {}", config.address);
+        println!("Address: {}", self.state.config.address);
 
-        if let Some(gateway) = config.gateway {
+        if let Some(gateway) = self.state.config.gateway {
             println!("Gateway: {}", gateway);
         } else {
             println!("Gateway: N/A");
         }
 
         for index in 0..=2 {
-            if let Some(address) = config.dns_servers.get(index) {
+            if let Some(address) = self.state.config.dns_servers.get(index) {
                 println!("DNS {}: {address}", index + 1);
             } else {
                 println!("DNS {}: N/A", index + 1);

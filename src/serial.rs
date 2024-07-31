@@ -153,7 +153,7 @@ pub async fn read_line(buffer: &mut impl Write) -> Result<usize, fmt::Error> {
     static STD_IN_READ_LOCK: Mutex<CriticalSectionRawMutex, ()> = Mutex::new(());
 
     // Wait for other threads to finish.
-    STD_IN_READ_LOCK.lock().await;
+    let lock = STD_IN_READ_LOCK.lock().await;
 
     let mut count = 0;
     'a: loop {
@@ -179,10 +179,13 @@ pub async fn read_line(buffer: &mut impl Write) -> Result<usize, fmt::Error> {
             }
         }
     }
+
+    // Make sure the lock is only dropped at the end of the function.
+    drop(lock);
     Ok(count)
 }
 
-pub struct Disconnected {}
+pub struct Disconnected;
 
 #[allow(clippy::fallible_impl_from)]
 impl From<EndpointError> for Disconnected {

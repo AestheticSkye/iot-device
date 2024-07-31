@@ -13,10 +13,10 @@ use defmt::unwrap;
 use embassy_executor::Spawner;
 use embassy_rp::config::Config;
 
-use networking::{Client, Connected, Disconnected};
+use networking::{network_config::NetworkConfig, Client};
 use reqwless::request::Method;
 use serde::Deserialize;
-use serial::{init_serial, read_line};
+use serial::init_serial;
 use {defmt_rtt as _, panic_probe as _};
 
 #[embassy_executor::main]
@@ -29,19 +29,40 @@ async fn main(spawner: Spawner) {
 
     serial::wait_serial_up().await;
 
-    let client: Client<Connected> = {
-        let disconnected_client = Client::new(
-            &spawner,
-            peripherals.PIN_23,
-            peripherals.PIN_24,
-            peripherals.PIN_25,
-            peripherals.PIN_29,
-            peripherals.PIO0,
-            peripherals.DMA_CH0,
-        )
-        .await;
+    let mut disconnected_client = Client::new(
+        &spawner,
+        peripherals.PIN_23,
+        peripherals.PIN_24,
+        peripherals.PIN_25,
+        peripherals.PIN_29,
+        peripherals.PIO0,
+        peripherals.DMA_CH0,
+    )
+    .await;
 
-        connect_to_network(disconnected_client).await
+    let client = loop {
+        let network_config = NetworkConfig::generate().await;
+
+        println!("Attempting to connect to `{}`", network_config.ssid.trim());
+
+        match disconnected_client
+            .connect(
+                network_config.ssid.trim(),
+                network_config.password.as_ref().map(|s| s.trim()),
+                10,
+                network_config.ip_config,
+            )
+            .await
+        {
+            Ok(client) => {
+                println!("Connected to `{}`", network_config.ssid.trim());
+                break client;
+            }
+            Err((error, client)) => {
+                disconnected_client = client;
+                println!("Failed to connect to network: `{error}`");
+            }
+        };
     };
 
     client.print_config().await;
@@ -70,46 +91,4 @@ async fn main(spawner: Spawner) {
 #[derive(Deserialize, Default)]
 struct ApiResponse<'a> {
     datetime: &'a str,
-}
-
-async fn connect_to_network(mut disconnected_client: Client<Disconnected>) -> Client<Connected> {
-    loop {
-        let ssid = loop {
-            let mut ssid = heapless::String::<64>::new();
-            print!("Enter SSID: ");
-            _ = read_line(&mut ssid).await;
-            if !ssid.trim().is_empty() {
-                break ssid;
-            }
-            println!("SSID can not be blank");
-        };
-
-        // Retry if password is under 8 chars as the spec requires it to be 8 or over.
-        let password = loop {
-            let mut password = heapless::String::<64>::new();
-            print!("Enter Password (leave blank for open network): ");
-            _ = read_line(&mut password).await;
-            match password.trim().len() {
-                8.. => break Some(password),
-                0 => break None,
-                _ => println!("Password must have more than 8 characters"),
-            }
-        };
-
-        println!("Attempting to connect to `{}`", ssid.trim());
-
-        match disconnected_client
-            .connect(ssid.trim(), password.as_ref().map(|s| s.trim()), 10)
-            .await
-        {
-            Ok(client) => {
-                println!("Connected to `{}`", ssid.trim());
-                break client;
-            }
-            Err((error, client)) => {
-                disconnected_client = client;
-                println!("{error}");
-            }
-        };
-    }
 }

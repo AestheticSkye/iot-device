@@ -18,8 +18,9 @@ use embassy_rp::{
     peripherals::{DMA_CH0, PIN_23, PIN_24, PIN_25, PIN_29, PIO0},
     pio::{InterruptHandler, Pio},
 };
-use embassy_time::{Instant, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use heapless::{String, Vec};
+use network_config::NetworkConfig;
 use rand::RngCore;
 use reqwless::{
     client::{HttpClient, TlsConfig, TlsVerify},
@@ -52,6 +53,8 @@ async fn net_task(stack: &'static Stack) -> ! {
 }
 
 const RX_BUFFER_SIZE: usize = 8192;
+
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct Disconnected {
     control: Control<'static>,
@@ -169,21 +172,24 @@ impl<'a> Client<Disconnected> {
 
     pub async fn connect(
         mut self,
-        ssid: &str,
-        password: Option<&str>,
-        timeout: u64,
-        static_config: Option<StaticConfigV4>,
+        network_config: &NetworkConfig,
     ) -> Result<Client<Connected>, (ConnectionError, Self)> {
-        if let Some(static_config) = static_config {
+        if let Some(ip_config) = &network_config.ip_config {
             self.stack
-                .set_config_v4(embassy_net::ConfigV4::Static(static_config));
+                .set_config_v4(embassy_net::ConfigV4::Static(ip_config.clone()));
         }
 
         if let Err(error) = {
-            if let Some(password) = password {
-                self.state.control.join_wpa2(ssid, password).await
+            if let Some(password) = &network_config.password {
+                self.state
+                    .control
+                    .join_wpa2(network_config.ssid.as_str(), password.as_ref())
+                    .await
             } else {
-                self.state.control.join_open(ssid).await
+                self.state
+                    .control
+                    .join_open(network_config.ssid.as_str())
+                    .await
             }
         } {
             info!("join failed with status={}", error.status);
@@ -200,7 +206,7 @@ impl<'a> Client<Disconnected> {
         while !self.stack.is_config_up() {
             Timer::after_millis(100).await;
             let now = Instant::now();
-            if (now - start).as_secs() > timeout {
+            if (now - start) > CONNECTION_TIMEOUT {
                 return Err((ConnectionError::DhcpTimeout, self));
             }
         }
@@ -211,7 +217,7 @@ impl<'a> Client<Disconnected> {
         while !self.stack.is_link_up() {
             Timer::after_millis(500).await;
             let now = Instant::now();
-            if (now - start).as_secs() > timeout {
+            if (now - start) > CONNECTION_TIMEOUT {
                 return Err((ConnectionError::OtherTimeout, self));
             }
         }

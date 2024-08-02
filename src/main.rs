@@ -45,15 +45,7 @@ async fn main(spawner: Spawner) {
 
         println!("Attempting to connect to `{}`", network_config.ssid.trim());
 
-        match disconnected_client
-            .connect(
-                network_config.ssid.trim(),
-                network_config.password.as_ref().map(|s| s.trim()),
-                10,
-                network_config.ip_config,
-            )
-            .await
-        {
+        match disconnected_client.connect(&network_config).await {
             Ok(client) => {
                 println!("Connected to `{}`", network_config.ssid.trim());
                 break client;

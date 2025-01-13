@@ -3,5 +3,6 @@
     "rust-analyzer.check.extraArgs": [
         "--target",
         "thumbv6m-none-eabi"
-    ]
+    ],
+    "rust-analyzer.checkOnSave": false
 }

@@ -9,7 +9,7 @@ use embassy_executor::Spawner;
 use embassy_net::{
     dns::DnsSocket,
     tcp::client::{TcpClient, TcpClientState},
-    Config, DhcpConfig, StackResources, StaticConfigV4,
+    Config, ConfigV4, DhcpConfig, StackResources, StaticConfigV4,
 };
 use embassy_rp::{
     bind_interrupts,
@@ -116,10 +116,10 @@ impl<'a> Client<Disconnected> {
         let mut rng = RoscRng;
 
         // let fw = include_bytes!("../firmware/43439A0.bin");
-        let clm = include_bytes!("../firmware/43439A0_clm.bin");
+        // let clm = include_bytes!("../firmware/43439A0_clm.bin");
 
         let fw = unsafe { core::slice::from_raw_parts(0x1010_0000 as *const u8, 2_303_211) };
-        // let clm = unsafe { core::slice::from_raw_parts(0x10140000 as *const u8, 4752) };
+        let clm = unsafe { core::slice::from_raw_parts(0x10140000 as *const u8, 4752) };
 
         let pwr = Output::new(pin_23, Level::Low);
         let cs = Output::new(pin_25, Level::High);
@@ -300,13 +300,11 @@ impl Client<Connected> {
         };
 
         // Create request with headers and body.
-        let mut request = {
-            let mut request = http_client.request(method, url).await?;
-            if let Some(headers) = headers {
-                request = request.headers(headers);
-            }
-            request.body(body.map(str::as_bytes))
-        };
+        let mut request = http_client.request(method, url).await?;
+        if let Some(headers) = headers {
+            request = request.headers(headers);
+        }
+        let mut request = request.body(body.map(str::as_bytes));
 
         info!("connecting to {}", &url);
 

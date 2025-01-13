@@ -44,9 +44,10 @@ impl NetworkConfig {
             }
         };
 
+        // Trim newlines off of strings
         Self {
-            ssid,
-            password,
+            ssid: ssid.trim().try_into().unwrap(),
+            password: password.map(|p| p.trim().try_into().unwrap()),
             ip_config,
         }
     }

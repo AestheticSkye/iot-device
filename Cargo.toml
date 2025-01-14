@@ -9,30 +9,57 @@ pedantic = "warn"
 nursery = "warn"
 
 [dependencies]
-embassy-embedded-hal = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy", features = ["defmt"], package = "embassy-embedded-hal" }
-embassy-sync = { version = "0.6.0", git = "https://github.com/embassy-rs/embassy", features = ["defmt"], package = "embassy-sync" }
-embassy-executor = { version = "0.5.0", git = "https://github.com/embassy-rs/embassy", features = ["task-arena-size-98304", "arch-cortex-m", "executor-thread", "executor-interrupt", "defmt", "integrated-timers"], package = "embassy-executor" }
-embassy-time = { version = "0.3.1", git = "https://github.com/embassy-rs/embassy", features = ["defmt", "defmt-timestamp-uptime"], package = "embassy-time" }
-embassy-rp = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl"], package = "embassy-rp" }
-embassy-usb = { version = "0.2.0", git = "https://github.com/embassy-rs/embassy", features = ["defmt"], package = "embassy-usb" }
-embassy-net = { version = "0.4.0", git = "https://github.com/embassy-rs/embassy", features = ["defmt", "tcp", "udp", "raw", "dhcpv4", "proto-ipv4", "medium-ethernet", "dns", "packet-trace"], package = "embassy-net" }
-embassy-futures = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy", package = "embassy-futures" }
-cyw43 = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy", features = ["defmt", "firmware-logs"] }
-cyw43-pio = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy", features = ["defmt", "overclock"] }
+embassy-embedded-hal = { version = "0.3.0", features = ["defmt"] }
+embassy-sync = { version = "0.6.0", features = ["defmt"] }
+embassy-executor = { version = "0.7.0", features = [
+    "task-arena-size-98304",
+    "arch-cortex-m",
+    "executor-thread",
+    "executor-interrupt",
+    "defmt",
+] }
+embassy-time = { version = "0.4.0", features = [
+    "defmt",
+    "defmt-timestamp-uptime",
+] }
+embassy-rp = { version = "0.3.0", features = [
+    "defmt",
+    "unstable-pac",
+    "time-driver",
+    "critical-section-impl",
+    "rp2040",
+] }
+embassy-usb = { version = "0.3.0", features = ["defmt"] }
+embassy-net = { version = "0.6.0", features = [
+    "defmt",
+    "tcp",
+    "udp",
+    "raw",
+    "dhcpv4",
+    "proto-ipv4",
+    "medium-ethernet",
+    "dns",
+    "packet-trace",
+] }
+embassy-futures = { version = "0.1.0", package = "embassy-futures" }
+cyw43 = { version = "0.3.0", features = ["defmt", "firmware-logs"] }
+cyw43-pio = { version = "0.3.0", features = ["defmt"] }
 
 defmt = "0.3.8"
 defmt-rtt = "0.4.1"
 
-serde-json-core = "0.5.1"
+serde-json-core = "0.6.0"
 serde = { version = "1.0.204", default-features = false, features = ["derive"] }
-reqwless = { version = "0.12.0", features = ["defmt"]}
+reqwless = { version = "0.13.0", features = ["defmt"] }
 rand = { version = "0.8.5", default-features = false }
-smoltcp = { version = "0.11.0", default-features = false, features = [ "dns-max-server-count-4" ] }
+smoltcp = { version = "0.12.0", default-features = false, features = [
+    "dns-max-server-count-4",
+] }
 
 cortex-m-rt = "0.7.3"
 panic-probe = { version = "0.3.2", features = ["print-defmt"] }
 heapless = "0.8.0"
-embedded-alloc = "0.5.1"
+embedded-alloc = "0.6.0"
 
 static_cell = "2.1.0"
 portable-atomic = { version = "1.7.0", features = ["critical-section"] }

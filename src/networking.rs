@@ -2,14 +2,14 @@ pub mod network_config;
 
 use core::fmt::{Debug, Write};
 
-use cyw43::Control;
-use cyw43_pio::PioSpi;
+use cyw43::{Control, JoinOptions};
+use cyw43_pio::{PioSpi, DEFAULT_CLOCK_DIVIDER};
 use defmt::{info, unwrap};
 use embassy_executor::Spawner;
 use embassy_net::{
     dns::DnsSocket,
     tcp::client::{TcpClient, TcpClientState},
-    Config, ConfigV4, DhcpConfig, StackResources, StaticConfigV4,
+    Config, DhcpConfig, Stack, StackResources, StaticConfigV4,
 };
 use embassy_rp::{
     bind_interrupts,
@@ -38,19 +38,10 @@ bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
 });
 
-type Stack = embassy_net::Stack<cyw43::NetDriver<'static>>;
-
-#[embassy_executor::task]
-async fn wifi_task(
-    runner: cyw43::Runner<'static, Output<'static>, PioSpi<'static, PIO0, 0, DMA_CH0>>,
-) -> ! {
-    runner.run().await
-}
-
-#[embassy_executor::task]
-async fn net_task(stack: &'static Stack) -> ! {
-    stack.run().await
-}
+// #[embassy_executor::task]
+// async fn net_task(stack: &'static Stack) -> ! {
+//     stack.run().await
+// }
 
 const RX_BUFFER_SIZE: usize = 8192;
 
@@ -65,7 +56,7 @@ pub struct Connected {
 }
 
 pub struct Client<T> {
-    stack: &'static Stack,
+    stack: Stack<'static>,
     seed: u64,
     state: T,
 }
@@ -102,6 +93,18 @@ impl From<reqwless::Error> for RequestError {
     }
 }
 
+#[embassy_executor::task]
+async fn cyw43_task(
+    runner: cyw43::Runner<'static, Output<'static>, PioSpi<'static, PIO0, 0, DMA_CH0>>,
+) -> ! {
+    runner.run().await
+}
+
+#[embassy_executor::task]
+async fn net_task(mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'static>>) -> ! {
+    runner.run().await
+}
+
 impl<'a> Client<Disconnected> {
     #[allow(clippy::items_after_statements)]
     pub async fn new(
@@ -115,11 +118,12 @@ impl<'a> Client<Disconnected> {
     ) -> Self {
         let mut rng = RoscRng;
 
+        // Use these if the firmware has not been preflashed to the pico.
         // let fw = include_bytes!("../firmware/43439A0.bin");
         // let clm = include_bytes!("../firmware/43439A0_clm.bin");
 
         let fw = unsafe { core::slice::from_raw_parts(0x1010_0000 as *const u8, 2_303_211) };
-        let clm = unsafe { core::slice::from_raw_parts(0x10140000 as *const u8, 4752) };
+        let clm = unsafe { core::slice::from_raw_parts(0x1014_0000 as *const u8, 4752) };
 
         let pwr = Output::new(pin_23, Level::Low);
         let cs = Output::new(pin_25, Level::High);
@@ -127,6 +131,7 @@ impl<'a> Client<Disconnected> {
         let spi = PioSpi::new(
             &mut pio.common,
             pio.sm0,
+            DEFAULT_CLOCK_DIVIDER,
             pio.irq0,
             cs,
             pin_24,
@@ -137,7 +142,7 @@ impl<'a> Client<Disconnected> {
         static STATE: StaticCell<cyw43::State> = StaticCell::new();
         let state = STATE.init(cyw43::State::new());
         let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw).await;
-        unwrap!(spawner.spawn(wifi_task(runner)));
+        unwrap!(spawner.spawn(cyw43_task(runner)));
 
         control.init(clm).await;
         control
@@ -150,18 +155,20 @@ impl<'a> Client<Disconnected> {
         let seed = rng.next_u64();
 
         // Init network stack
-        static STACK: StaticCell<Stack> = StaticCell::new();
         static RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
-        let stack = &*STACK.init(Stack::new(
+
+        let (stack, runner) = embassy_net::new(
             net_device,
             config,
-            RESOURCES.init(StackResources::<5>::new()),
+            RESOURCES.init(StackResources::new()),
             seed,
-        ));
+        );
 
-        unwrap!(spawner.spawn(net_task(stack)));
+        unwrap!(spawner.spawn(net_task(runner)));
 
         info!("Network stack initialised");
+
+        info!("{}", stack.hardware_address());
 
         Self {
             state: Disconnected { control },
@@ -183,12 +190,15 @@ impl<'a> Client<Disconnected> {
             if let Some(password) = &network_config.password {
                 self.state
                     .control
-                    .join_wpa2(network_config.ssid.as_str(), password.as_ref())
+                    .join(
+                        network_config.ssid.as_str(),
+                        JoinOptions::new(password.as_bytes()),
+                    )
                     .await
             } else {
                 self.state
                     .control
-                    .join_open(network_config.ssid.as_str())
+                    .join(network_config.ssid.as_str(), JoinOptions::new_open())
                     .await
             }
         } {

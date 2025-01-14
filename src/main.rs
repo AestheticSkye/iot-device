@@ -21,7 +21,7 @@ use {defmt_rtt as _, panic_probe as _};
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    allocator::init();
+    // allocator::init();
 
     let peripherals = embassy_rp::init(Config::default());
 

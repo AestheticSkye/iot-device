@@ -2,7 +2,10 @@ use crate::serial::STD_OUT;
 
 #[macro_export]
 macro_rules! print {
-    ($($arg:tt)*) => ($crate::serial::print::_print(format_args!($($arg)*)).await);
+    ($($arg:tt)*) => ({
+        #[allow(clippy::used_underscore_items)]
+        $crate::serial::print::_print(format_args!($($arg)*)).await
+    });
 }
 
 #[macro_export]

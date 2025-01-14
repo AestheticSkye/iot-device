@@ -72,7 +72,7 @@ impl NetworkConfig {
             }
             match buf.trim().parse() {
                 Ok(gateway) => break Some(gateway),
-                Err(()) => println!("Incorrect IPv4 address inputted"),
+                Err(err) => println!("Incorrect IPv4 address inputted: {err}"),
             };
         };
 
@@ -93,7 +93,7 @@ impl NetworkConfig {
             }
             match buf.trim().parse() {
                 Ok(dns_server) => _ = dns_servers.push(dns_server),
-                Err(()) => println!("Incorrect IPv4 address inputted"),
+                Err(err) => println!("Incorrect IPv4 address inputted: {err}"),
             }
         }
 
